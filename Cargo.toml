@@ -1,0 +1,26 @@
+[package]
+name = "bg-key-dbclk-checker"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+description = "Cross-platform physical keyboard chatter detector and persistent log CLI"
+
+[dependencies]
+anyhow = "1"
+chrono = { version = "0.4", features = ["serde"] }
+clap = { version = "4", features = ["derive"] }
+ctrlc = "3"
+dirs = "6"
+fs2 = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+evdev = "0.13"
+libc = "0.2"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_Graphics_Gdi"] }
+
+[dev-dependencies]
+tempfile = "3"
