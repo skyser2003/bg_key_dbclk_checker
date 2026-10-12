@@ -43,7 +43,11 @@ a `keystroke` record and a `symptom` record in this mode. The option applies onl
 to the current session; it does not remove records from previous sessions.
 
 The terminal reports saved symptoms and shows the log location at startup.
-Press **Ctrl+C** to stop. Capture does not install a background service.
+Press **Ctrl+C** to stop and display a double-click summary for the current
+session: the total symptom count and counts for each affected key and keyboard,
+with the most frequent first. Queued events are saved before the summary appears.
+Past sessions and ordinary keystroke records are excluded; a session without
+symptoms explicitly reports zero. Capture does not install a background service.
 
 ## View and clear saved logs
 

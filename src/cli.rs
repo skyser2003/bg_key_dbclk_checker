@@ -1,6 +1,7 @@
 use crate::{
     capture,
     detector::Range,
+    event::CaptureMessage,
     record::{LogRecord, RecordKind},
     session::Session,
     storage::{self, LogStore},
@@ -153,7 +154,7 @@ fn monitor(path: PathBuf, options: Monitor) -> Result<()> {
         chrono::Utc::now().format("%Y%m%dT%H%M%S%.9fZ"),
         std::process::id()
     );
-    let mut session = Session::new(range, options.all_keys, store, session_id);
+    let session = Session::new(range, options.all_keys, store, session_id);
     let stop = Arc::new(AtomicBool::new(false));
     let signal_stop = stop.clone();
     ctrlc::set_handler(move || signal_stop.store(true, Ordering::Relaxed))
@@ -172,8 +173,22 @@ fn monitor(path: PathBuf, options: Monitor) -> Result<()> {
     let (tx, rx) = mpsc::sync_channel(4096);
     let capture_stop = stop.clone();
     let worker = thread::spawn(move || capture::run(tx, capture_stop));
+    monitor_session(session, rx, worker, &stop, &mut io::stdout().lock())?;
+    eprintln!(
+        "Monitoring stopped; saved records remain in {}",
+        path.display()
+    );
+    Ok(())
+}
+
+fn monitor_session(
+    mut session: Session,
+    rx: mpsc::Receiver<CaptureMessage>,
+    worker: thread::JoinHandle<Result<()>>,
+    stop: &AtomicBool,
+    output: &mut impl Write,
+) -> Result<()> {
     let result = (|| -> Result<()> {
-        let mut output = io::stdout().lock();
         // Drain timestamped events until capture closes, including events already
         // queued when Ctrl+C was received, so detected symptoms remain durable.
         while let Ok(message) = rx.recv() {
@@ -198,9 +213,71 @@ fn monitor(path: PathBuf, options: Monitor) -> Result<()> {
         .map_err(|_| anyhow::anyhow!("keyboard capture thread panicked"));
     result?;
     capture_result??;
-    eprintln!(
-        "Monitoring stopped; saved records remain in {}",
-        path.display()
-    );
+    session.write_summary(output)?;
+    output.flush()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        event::{CaptureMessage, Key, KeyAction, KeyEvent, Source},
+        record::RecordKind,
+    };
+
+    #[test]
+    fn ctrl_c_drains_queued_symptoms_before_printing_summary() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("log");
+        let session = Session::new(
+            Range::new(0.0, 80.0).unwrap(),
+            false,
+            LogStore::open(&path).unwrap(),
+            "current".into(),
+        );
+        let (tx, rx) = mpsc::sync_channel(16);
+        for (action, ms) in [
+            (KeyAction::Press, 100),
+            (KeyAction::Release, 110),
+            (KeyAction::Press, 130),
+            (KeyAction::Release, 140),
+            (KeyAction::Press, 160),
+        ] {
+            tx.send(CaptureMessage::Event(KeyEvent {
+                source: Source {
+                    id: "keyboard".into(),
+                    name: None,
+                },
+                key: Key {
+                    code: 30,
+                    name: "A".into(),
+                },
+                action,
+                monotonic_ns: ms * 1_000_000,
+                timestamp: chrono::Utc::now(),
+            }))
+            .unwrap();
+        }
+        let stop = AtomicBool::new(true); // Ctrl+C with events still queued.
+        let worker = thread::spawn(move || {
+            drop(tx);
+            Ok(())
+        });
+        let mut output = Vec::new();
+        monitor_session(session, rx, worker, &stop, &mut output).unwrap();
+        let output = String::from_utf8(output).unwrap();
+        assert_eq!(output.matches("Saved symptom:").count(), 2);
+        assert!(output.contains("Total symptoms: 2"));
+        assert!(output.contains("2 key=\"A\" code=30 source=\"keyboard\""));
+        assert!(
+            output.rfind("Saved symptom:").unwrap() < output.find("Double-click summary").unwrap()
+        );
+        assert_eq!(
+            storage::view(&path, RecordKind::Symptom, 100)
+                .unwrap()
+                .len(),
+            2
+        );
+    }
 }
