@@ -5,6 +5,8 @@ pub use linux::run;
 #[cfg(target_os = "windows")]
 mod windows;
 #[cfg(target_os = "windows")]
+mod windows_device;
+#[cfg(target_os = "windows")]
 pub use windows::run;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -13,6 +15,9 @@ pub use macos::run;
 
 #[cfg(any(target_os = "windows", test))]
 mod windows_keys;
+
+#[cfg(any(target_os = "windows", test))]
+mod device_names;
 
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
 pub fn run(

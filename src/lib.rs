@@ -1,6 +1,7 @@
 pub mod capture;
 pub mod cli;
 pub mod detector;
+mod display;
 pub mod event;
 #[cfg(any(target_os = "macos", test))]
 #[path = "capture/macos_keys.rs"]

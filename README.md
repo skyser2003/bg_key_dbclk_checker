@@ -42,10 +42,23 @@ Release and repeat events are not saved. A press that completes a symptom create
 a `keystroke` record and a `symptom` record in this mode. The option applies only
 to the current session; it does not remove records from previous sessions.
 
-The terminal reports saved symptoms and shows the log location at startup.
+The monitor starts with a status header showing the detection range, recording
+mode, and log location. Saved symptoms stream into aligned time, key, code,
+delay, and keyboard columns. The heading appears once, long names wrap, and
+each saved row appears immediately without redrawing earlier output.
+Timestamps appear in green, key names in cyan, and delays in yellow on supported
+terminals. Displayed delays are rounded to whole milliseconds; detection and JSON
+records retain the original precision. Redirected output is plain text. Set
+`NO_COLOR=1` to disable colors, or `CLICOLOR_FORCE=1` to request them when
+redirecting output.
+Keyboard names are shown when available, with the system ID as a fallback.
+Terminal timestamps use local time in `YYYY-MM-DD HH:MM:SS` format. Windows
+keyboard labels include a short device tag so keyboards with identical names
+can be distinguished; the tag stays the same while the system UID is unchanged.
 Press **Ctrl+C** to stop and display a double-click summary for the current
 session: the total symptom count and counts for each affected key and keyboard,
-with the most frequent first. Queued events are saved before the summary appears.
+with the most frequent first in a summary table. Queued events are saved before
+the summary appears.
 Past sessions and ordinary keystroke records are excluded; a session without
 symptoms explicitly reports zero. Capture does not install a background service.
 
@@ -61,7 +74,10 @@ bg-key-dbclk-checker logs clear --yes
 
 Viewing defaults to the latest **100** records of all types, in recorded order.
 `--kind` selects `all`, `symptom`, or `keystroke`. Filtering happens before
-limiting. `--json` returns the original JSONL rows and emits no rows for an empty
+limiting. The readable view is an aligned table with local time, record type,
+key name, key code, delay, and keyboard columns. It adapts to the terminal width;
+ordinary keystrokes show `—` in the delay column. `--json` returns the original
+JSONL rows, including precise UTC timestamps, and emits no rows for an empty
 or absent log, making it suitable for scripts.
 
 Clearing requires `--yes` and removes every record from the selected file.
@@ -92,6 +108,8 @@ UTC `timestamp`, `key` (`code`, `name`), `source` (`id`, optional `name`), and
 `platform`. Symptoms also include `previous_timestamp`, `interval_ms`, `min_ms`,
 and `max_ms`. Key codes are native physical identifiers, not typed characters;
 their numeric meanings differ across operating systems.
+Both keystroke and symptom records retain the keyboard's system UID in
+`source.id` and its human-readable name in `source.name` (`null` if unavailable).
 
 If a previous interrupted write left a nonempty final line without a newline,
 monitoring refuses to append. Inspect/back up the file, or explicitly clear it.
@@ -103,7 +121,11 @@ when viewed.
 ### Windows
 
 Uses background Raw Input with independent keyboard device identities and
-scan-code extension flags. Ordinary software input posted with `SendInput`
+scan-code extension flags. Keyboard names prefer the bus-reported product name,
+including the parent device's name when it belongs to the same physical device.
+Windows friendly names and device descriptions are fallbacks. The Raw Input
+device path is preserved as the ID, and the short tag only affects display.
+Ordinary software input posted with `SendInput`
 does not enter this input stream. Native message timestamps have millisecond
 precision, so fractional thresholds cannot create submillisecond precision.
 The startup-held snapshot is global across keyboards, so an equivalent key on a

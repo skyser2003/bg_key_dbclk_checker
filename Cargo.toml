@@ -6,9 +6,12 @@ rust-version = "1.85"
 description = "Cross-platform physical keyboard chatter detector and persistent log CLI"
 
 [dependencies]
+anstream = "1"
 anyhow = "1"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive"] }
+# Newer comfy-table releases require Rust newer than this crate's 1.85 minimum.
+comfy-table = { version = "=7.1.4", features = ["custom_styling"] }
 ctrlc = "3"
 dirs = "6"
 fs2 = "0.4"
@@ -20,7 +23,7 @@ evdev = "0.13"
 libc = "0.2"
 
 [target.'cfg(target_os = "windows")'.dependencies]
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_Graphics_Gdi"] }
+windows-sys = { version = "0.61", features = ["Win32_Devices_DeviceAndDriverInstallation", "Win32_Devices_Properties", "Win32_Foundation", "Win32_UI_Input", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging", "Win32_System_LibraryLoader", "Win32_System_SystemInformation", "Win32_Graphics_Gdi"] }
 
 [dev-dependencies]
 tempfile = "3"

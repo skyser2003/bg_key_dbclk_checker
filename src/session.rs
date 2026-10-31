@@ -1,5 +1,6 @@
 use crate::{
     detector::{Detector, Range},
+    display::TerminalFormat,
     event::{CaptureMessage, Key, Source},
     record::{LogRecord, PressRecord, SymptomRecord},
     storage::LogStore,
@@ -69,6 +70,14 @@ impl Session {
 
     /// Report successfully saved symptoms from this session, grouped by source/key.
     pub fn write_summary(&self, output: &mut impl Write) -> io::Result<()> {
+        self.write_summary_with_format(output, &TerminalFormat::new(false))
+    }
+
+    pub(crate) fn write_summary_with_format(
+        &self,
+        output: &mut impl Write,
+        format: &TerminalFormat,
+    ) -> io::Result<()> {
         let mut counts: Vec<_> = self.symptom_counts.values().collect();
         counts.sort_unstable_by(|a, b| {
             b.count
@@ -83,11 +92,12 @@ impl Session {
         if counts.is_empty() {
             writeln!(output, "No double-click symptoms detected.")?;
         }
-        for entry in counts {
-            writeln!(
+        if !counts.is_empty() {
+            format.write_counts(
                 output,
-                "  {} key={:?} code={} source={:?}",
-                entry.count, entry.key.name, entry.key.code, entry.source.id
+                counts
+                    .into_iter()
+                    .map(|entry| (entry.count, &entry.key, &entry.source)),
             )?;
         }
         Ok(())

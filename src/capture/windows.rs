@@ -31,6 +31,7 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{
     PM_REMOVE, QS_ALLINPUT, WM_INPUT, WM_INPUT_DEVICE_CHANGE, WM_QUIT, WNDCLASSW,
 };
 
+use super::windows_device::DeviceInfo;
 use super::windows_keys::{
     canonical_virtual_key, event_timestamp, message_ticks, physical_code, KeyState,
     PacketNormalizer, PAUSE_CODE,
@@ -422,12 +423,13 @@ fn keyboard_devices() -> Result<Vec<HANDLE>> {
 
 fn device_source(handle: HANDLE) -> Source {
     let path = device_path(handle);
+    let name = path.as_deref().and_then(DeviceInfo::lookup_name);
     Source {
         id: path
             .as_ref()
             .map(|path| format!("rawinput:{path}"))
             .unwrap_or_else(|| format!("rawinput:handle:{:x}", handle as usize)),
-        name: path,
+        name,
     }
 }
 

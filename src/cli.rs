@@ -1,8 +1,9 @@
 use crate::{
     capture,
     detector::Range,
+    display::{MonitorDisplay, TerminalFormat},
     event::CaptureMessage,
-    record::{LogRecord, RecordKind},
+    record::RecordKind,
     session::Session,
     storage::{self, LogStore},
 };
@@ -99,31 +100,23 @@ pub fn run(cli: Cli) -> Result<()> {
             command: Logs::View { kind, limit, json },
         } => {
             let rows = storage::view(&path, kind, limit.get())?;
-            let mut output = io::stdout().lock();
-            if rows.is_empty() && !json {
-                writeln!(output, "No matching records in {}", path.display())?;
-            }
-            for row in rows {
+            let mut output = anstream::AutoStream::new(
+                io::stdout().lock(),
                 if json {
-                    writeln!(output, "{}", row.json)?;
+                    anstream::ColorChoice::Never
                 } else {
-                    let press = row.record.press();
-                    let interval = match &row.record {
-                        LogRecord::Symptom(s) => format!(" interval={:.3} ms", s.interval_ms),
-                        _ => String::new(),
-                    };
-                    // Debug string formatting escapes control characters in device/key names.
-                    writeln!(
-                        output,
-                        "{} {:?} key={:?} code={} source={:?}{}",
-                        press.timestamp.to_rfc3339(),
-                        row.record.kind(),
-                        press.key.name,
-                        press.key.code,
-                        press.source.id,
-                        interval
-                    )?;
+                    anstream::ColorChoice::Auto
+                },
+            );
+            let format = TerminalFormat::new(true);
+            if json {
+                for row in rows {
+                    writeln!(output, "{}", row.json)?;
                 }
+            } else if rows.is_empty() {
+                writeln!(output, "No matching records in {}", path.display())?;
+            } else {
+                format.write_logs(&rows, &mut output)?;
             }
             Ok(())
         }
@@ -159,21 +152,17 @@ fn monitor(path: PathBuf, options: Monitor) -> Result<()> {
     let signal_stop = stop.clone();
     ctrlc::set_handler(move || signal_stop.store(true, Ordering::Relaxed))
         .context("cannot install Ctrl+C handler")?;
-    eprintln!("Log: {}", path.display());
-    eprintln!(
-        "Range: {}–{} ms; saving {}. Press Ctrl+C to stop.",
-        range.min_ms,
-        range.max_ms,
-        if options.all_keys {
-            "all distinct physical presses and symptoms"
-        } else {
-            "symptoms"
-        }
-    );
+    let format = TerminalFormat::new(true);
+    {
+        let mut status =
+            anstream::AutoStream::new(io::stderr().lock(), anstream::ColorChoice::Auto);
+        format.write_monitor_status(&mut status, &path, range, options.all_keys)?;
+    }
     let (tx, rx) = mpsc::sync_channel(4096);
     let capture_stop = stop.clone();
     let worker = thread::spawn(move || capture::run(tx, capture_stop));
-    monitor_session(session, rx, worker, &stop, &mut io::stdout().lock())?;
+    let mut output = anstream::AutoStream::new(io::stdout().lock(), anstream::ColorChoice::Auto);
+    monitor_session(session, rx, worker, &stop, &mut output, &format)?;
     eprintln!(
         "Monitoring stopped; saved records remain in {}",
         path.display()
@@ -187,21 +176,16 @@ fn monitor_session(
     worker: thread::JoinHandle<Result<()>>,
     stop: &AtomicBool,
     output: &mut impl Write,
+    format: &TerminalFormat,
 ) -> Result<()> {
+    let display = MonitorDisplay::for_terminal(format);
     let result = (|| -> Result<()> {
+        display.write_header(output)?;
         // Drain timestamped events until capture closes, including events already
         // queued when Ctrl+C was received, so detected symptoms remain durable.
         while let Ok(message) = rx.recv() {
             if let Some(symptom) = session.handle(message)? {
-                writeln!(
-                    output,
-                    "Saved symptom: {} key={:?} code={} interval={:.3} ms source={:?}",
-                    symptom.press.timestamp.to_rfc3339(),
-                    symptom.press.key.name,
-                    symptom.press.key.code,
-                    symptom.interval_ms,
-                    symptom.press.source.id
-                )?;
+                display.write_symptom(output, &symptom)?;
             }
         }
         Ok(())
@@ -213,7 +197,7 @@ fn monitor_session(
         .map_err(|_| anyhow::anyhow!("keyboard capture thread panicked"));
     result?;
     capture_result??;
-    session.write_summary(output)?;
+    session.write_summary_with_format(output, format)?;
     output.flush()?;
     Ok(())
 }
@@ -237,24 +221,24 @@ mod tests {
             "current".into(),
         );
         let (tx, rx) = mpsc::sync_channel(16);
-        for (action, ms) in [
-            (KeyAction::Press, 100),
-            (KeyAction::Release, 110),
-            (KeyAction::Press, 130),
-            (KeyAction::Release, 140),
-            (KeyAction::Press, 160),
+        for (action, monotonic_ns) in [
+            (KeyAction::Press, 100_000_000),
+            (KeyAction::Release, 110_000_000),
+            (KeyAction::Press, 130_750_000),
+            (KeyAction::Release, 140_000_000),
+            (KeyAction::Press, 160_500_000),
         ] {
             tx.send(CaptureMessage::Event(KeyEvent {
                 source: Source {
                     id: "keyboard".into(),
-                    name: None,
+                    name: Some("Mechanical Keyboard".into()),
                 },
                 key: Key {
                     code: 30,
                     name: "A".into(),
                 },
                 action,
-                monotonic_ns: ms * 1_000_000,
+                monotonic_ns,
                 timestamp: chrono::Utc::now(),
             }))
             .unwrap();
@@ -265,14 +249,36 @@ mod tests {
             Ok(())
         });
         let mut output = Vec::new();
-        monitor_session(session, rx, worker, &stop, &mut output).unwrap();
+        monitor_session(
+            session,
+            rx,
+            worker,
+            &stop,
+            &mut output,
+            &TerminalFormat::new(false),
+        )
+        .unwrap();
         let output = String::from_utf8(output).unwrap();
-        assert_eq!(output.matches("Saved symptom:").count(), 2);
+        let (live, summary) = output.split_once("Double-click summary").unwrap();
+        assert_eq!(live.matches("Time (local)").count(), 1, "{output}");
+        let rows: Vec<Vec<&str>> = live
+            .lines()
+            .filter(|line| line.contains(" ms"))
+            .map(|line| line.split('|').map(str::trim).collect())
+            .collect();
+        assert_eq!(rows.len(), 2, "{output}");
+        for (row, delay) in rows.iter().zip(["31 ms", "30 ms"]) {
+            assert_eq!(row.len(), 7);
+            assert!(chrono::NaiveDateTime::parse_from_str(row[1], "%Y-%m-%d %H:%M:%S").is_ok());
+            assert_eq!(
+                &row[2..6],
+                &["\"A\"", "30", delay, "\"Mechanical Keyboard\""]
+            );
+        }
         assert!(output.contains("Total symptoms: 2"));
-        assert!(output.contains("2 key=\"A\" code=30 source=\"keyboard\""));
-        assert!(
-            output.rfind("Saved symptom:").unwrap() < output.find("Double-click summary").unwrap()
-        );
+        assert!(summary.contains("Count"));
+        assert!(!output.contains("key="));
+        assert!(!output.contains("interval="));
         assert_eq!(
             storage::view(&path, RecordKind::Symptom, 100)
                 .unwrap()

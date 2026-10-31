@@ -48,6 +48,23 @@ fn summary(session: &Session) -> String {
     String::from_utf8(output).unwrap()
 }
 
+struct SummaryTable;
+
+impl SummaryTable {
+    fn rows(text: &str) -> Vec<Vec<&str>> {
+        text.lines()
+            .filter(|line| line.starts_with('|'))
+            .map(|line| line.split('|').map(str::trim).collect::<Vec<&str>>())
+            .filter(|cells| {
+                cells
+                    .get(1)
+                    .is_some_and(|count| count.parse::<u64>().is_ok())
+            })
+            .map(|cells| cells[1..cells.len() - 1].to_vec())
+            .collect()
+    }
+}
+
 #[test]
 fn summary_counts_each_native_key_and_keyboard_most_frequent_first() {
     let dir = tempfile::tempdir().unwrap();
@@ -58,16 +75,15 @@ fn summary_counts_each_native_key_and_keyboard_most_frequent_first() {
     let output = summary(&session);
     assert!(output.contains("Double-click summary (current session)"));
     assert!(output.contains("Total symptoms: 4"));
-    let most = output
-        .find("2 key=\"A\" code=30 source=\"keyboard-a\"")
-        .unwrap();
-    let next = output
-        .find("1 key=\"A\" code=30 source=\"keyboard-b\"")
-        .unwrap();
-    let last = output
-        .find("1 key=\"B\" code=48 source=\"keyboard-a\"")
-        .unwrap();
-    assert!(most < next && next < last);
+    assert_eq!(
+        SummaryTable::rows(&output),
+        vec![
+            vec!["2", "\"A\"", "30", "\"keyboard-a\""],
+            vec!["1", "\"A\"", "30", "\"keyboard-b\""],
+            vec!["1", "\"B\"", "48", "\"keyboard-a\""],
+        ],
+        "{output}"
+    );
 }
 
 #[test]
@@ -107,9 +123,10 @@ fn summary_uses_only_saved_symptoms_from_the_current_session() {
     presses(&mut current, "keyboard", "C", 46, &[200]);
     let output = summary(&current);
     assert!(output.contains("Total symptoms: 1"));
-    assert!(output.contains("1 key=\"A\" code=30 source=\"keyboard\""));
-    assert!(!output.contains("key=\"B\""));
-    assert!(!output.contains("key=\"C\""));
+    assert_eq!(
+        SummaryTable::rows(&output),
+        vec![vec!["1", "\"A\"", "30", "\"keyboard\""]]
+    );
 }
 
 #[test]
@@ -120,7 +137,7 @@ fn empty_summary_explicitly_reports_no_symptoms() {
     let output = summary(&session);
     assert!(output.contains("Total symptoms: 0"));
     assert!(output.contains("No double-click symptoms detected."));
-    assert!(!output.contains("key="));
+    assert!(SummaryTable::rows(&output).is_empty());
 }
 
 #[test]
@@ -137,4 +154,48 @@ fn failed_save_is_not_included_in_summary() {
         .handle(event("keyboard", "A", 30, KeyAction::Press, 130))
         .is_err());
     assert!(summary(&session).contains("Total symptoms: 0"));
+}
+
+#[test]
+fn summary_prefers_keyboard_names_but_groups_by_system_uid() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("log");
+    let mut session = session(&path, true, "current");
+    for uid in ["keyboard-a", "keyboard-b"] {
+        for (action, ms) in [
+            (KeyAction::Press, 100),
+            (KeyAction::Release, 110),
+            (KeyAction::Press, 130),
+        ] {
+            let CaptureMessage::Event(mut event) = event(uid, "A", 30, action, ms) else {
+                unreachable!();
+            };
+            event.source.name = Some("Mechanical Keyboard".into());
+            session.handle(CaptureMessage::Event(event)).unwrap();
+        }
+    }
+    let text = summary(&session);
+    assert!(text.contains("Total symptoms: 2"));
+    assert_eq!(
+        SummaryTable::rows(&text),
+        vec![
+            vec!["1", "\"A\"", "30", "\"Mechanical Keyboard\""],
+            vec!["1", "\"A\"", "30", "\"Mechanical Keyboard\""],
+        ],
+        "{text}"
+    );
+    assert!(!text.contains("keyboard-a"));
+    assert!(!text.contains("keyboard-b"));
+    let records = bg_key_dbclk_checker::storage::view(
+        &path,
+        bg_key_dbclk_checker::record::RecordKind::All,
+        100,
+    )
+    .unwrap();
+    assert_eq!(records.len(), 6);
+    for saved in records {
+        let source = &saved.record.press().source;
+        assert_eq!(source.name.as_deref(), Some("Mechanical Keyboard"));
+        assert!(["keyboard-a", "keyboard-b"].contains(&source.id.as_str()));
+    }
 }
